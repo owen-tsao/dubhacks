@@ -1,0 +1,432 @@
+service: branchpoint-backend
+
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: nodejs18.x
+  stage: ${opt:stage, 'dev'}
+  region: ${opt:region, 'us-east-1'}
+  httpApi:
+    cors:
+      allowedOrigins:
+        - '*'
+      allowedHeaders:
+        - Content-Type
+        - X-Amz-Date
+        - Authorization
+        - X-Api-Key
+        - X-Amz-Security-Token
+        - X-Amz-User-Agent
+        - X-Amzn-Trace-Id
+        - x-user-id
+      allowedMethods:
+        - GET
+        - POST
+        - PUT
+        - DELETE
+        - OPTIONS
+  environment:
+    DECISIONS_TABLE: ${self:service}-decisions-${self:provider.stage}
+    BRANCHES_TABLE: ${self:service}-branches-${self:provider.stage}
+    CONVERSATIONS_TABLE: ${self:service}-conversations-${self:provider.stage}
+    COMPARISONS_TABLE: ${self:service}-comparisons-${self:provider.stage}
+    EVENTS_TABLE: ${self:service}-events-${self:provider.stage}
+    BEDROCK_ENDPOINT: https://bedrock.${self:provider.region}.amazonaws.com
+    BEDROCK_MODEL: anthropic.claude-v2
+    COGNITO_USER_POOL_ID: ${env:COGNITO_USER_POOL_ID, 'demo-user-pool'}
+    COGNITO_USER_POOL_CLIENT_ID: ${env:COGNITO_USER_POOL_CLIENT_ID, 'demo-client-id'}
+    STATSIG_SERVER_KEY: ${env:STATSIG_SERVER_KEY, 'demo-statsig-key'}
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:Query
+            - dynamodb:Scan
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            - dynamodb:UpdateItem
+            - dynamodb:DeleteItem
+          Resource:
+            - "arn:aws:dynamodb:${self:provider.region}:*:table/${self:service}-*"
+        - Effect: Allow
+          Action:
+            - bedrock:InvokeModel
+          Resource: "*"
+        - Effect: Allow
+          Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+          Resource: "*"
+
+plugins:
+  - serverless-plugin-typescript
+  - serverless-offline
+
+custom:
+  serverless-offline:
+    httpPort: 3001
+    host: 0.0.0.0
+
+resources:
+  Resources:
+    # DynamoDB Tables
+    DecisionsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.DECISIONS_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: DecisionId
+            AttributeType: S
+          - AttributeName: UserId
+            AttributeType: S
+          - AttributeName: State
+            AttributeType: S
+          - AttributeName: CreatedAt
+            AttributeType: S
+        KeySchema:
+          - AttributeName: DecisionId
+            KeyType: HASH
+          - AttributeName: UserId
+            KeyType: RANGE
+        GlobalSecondaryIndexes:
+          - IndexName: UserIndex
+            KeySchema:
+              - AttributeName: UserId
+                KeyType: HASH
+              - AttributeName: CreatedAt
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+          - IndexName: StateIndex
+            KeySchema:
+              - AttributeName: State
+                KeyType: HASH
+              - AttributeName: CreatedAt
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+
+    BranchesTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.BRANCHES_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: BranchId
+            AttributeType: S
+          - AttributeName: DecisionId
+            AttributeType: S
+          - AttributeName: CreatedAt
+            AttributeType: S
+        KeySchema:
+          - AttributeName: BranchId
+            KeyType: HASH
+          - AttributeName: DecisionId
+            KeyType: RANGE
+        GlobalSecondaryIndexes:
+          - IndexName: DecisionIndex
+            KeySchema:
+              - AttributeName: DecisionId
+                KeyType: HASH
+              - AttributeName: CreatedAt
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+
+    ConversationsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.CONVERSATIONS_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: ConversationId
+            AttributeType: S
+          - AttributeName: BranchId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: ConversationId
+            KeyType: HASH
+          - AttributeName: BranchId
+            KeyType: RANGE
+
+    ComparisonsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.COMPARISONS_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: ComparisonId
+            AttributeType: S
+          - AttributeName: DecisionId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: ComparisonId
+            KeyType: HASH
+          - AttributeName: DecisionId
+            KeyType: RANGE
+
+    EventsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.EVENTS_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: EventId
+            AttributeType: S
+          - AttributeName: UserId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: EventId
+            KeyType: HASH
+          - AttributeName: UserId
+            KeyType: RANGE
+
+functions:
+  # Decision Management
+  createDecision:
+    handler: functions/createDecision.handler
+    events:
+      - http:
+          path: /decisions
+          method: post
+          cors:
+            origin: '*'
+            headers:
+              - Content-Type
+              - X-Amz-Date
+              - Authorization
+              - X-Api-Key
+              - X-Amz-Security-Token
+              - X-Amz-User-Agent
+              - X-Amzn-Trace-Id
+              - x-user-id
+            allowCredentials: false
+
+  listDecisions:
+    handler: functions/listDecisions.handler
+    events:
+      - http:
+          path: /decisions
+          method: get
+          cors:
+            origin: '*'
+            headers:
+              - Content-Type
+              - X-Amz-Date
+              - Authorization
+              - X-Api-Key
+              - X-Amz-Security-Token
+              - X-Amz-User-Agent
+              - X-Amzn-Trace-Id
+              - x-user-id
+            allowCredentials: false
+
+  getDecision:
+    handler: functions/getDecision.handler
+    events:
+      - http:
+          path: /decisions/{id}
+          method: get
+          cors:
+            origin: '*'
+            headers:
+              - Content-Type
+              - X-Amz-Date
+              - Authorization
+              - X-Api-Key
+              - X-Amz-Security-Token
+              - X-Amz-User-Agent
+              - X-Amzn-Trace-Id
+              - x-user-id
+            allowCredentials: false
+
+  # Branch Management
+  createBranch:
+    handler: functions/createBranch.handler
+    events:
+      - http:
+          path: /decisions/{id}/branches
+          method: post
+          cors:
+            origin: '*'
+            headers:
+              - Content-Type
+              - X-Amz-Date
+              - Authorization
+              - X-Api-Key
+              - X-Amz-Security-Token
+              - X-Amz-User-Agent
+              - X-Amzn-Trace-Id
+              - x-user-id
+            allowCredentials: false
+
+  # Simulation
+  generateBranches:
+    handler: functions/generateBranches.handler
+    timeout: 30
+    events:
+      - http:
+          path: /generate-branches
+          method: post
+          cors:
+            origin: '*'
+            headers:
+              - Content-Type
+              - X-Amz-Date
+              - Authorization
+              - X-Api-Key
+              - X-Amz-Security-Token
+              - X-Amz-User-Agent
+              - X-Amzn-Trace-Id
+              - x-user-id
+            allowCredentials: false
+
+  generateFollowUpDecisions:
+    handler: functions/generateFollowUpDecisions.handler
+    timeout: 30
+    events:
+      - http:
+          path: /generate-followup-decisions
+          method: post
+          cors:
+            origin: '*'
+            headers:
+              - Content-Type
+              - X-Amz-Date
+              - Authorization
+              - X-Api-Key
+              - X-Amz-Security-Token
+              - X-Amz-User-Agent
+              - X-Amzn-Trace-Id
+              - x-user-id
+            allowCredentials: false
+
+  generateFollowUpSimulation:
+    handler: functions/generateFollowUpSimulation.handler
+    timeout: 30
+    events:
+      - http:
+          path: /generate-followup-simulation
+          method: post
+          cors:
+            origin: '*'
+            headers:
+              - Content-Type
+              - X-Amz-Date
+              - Authorization
+              - X-Api-Key
+              - X-Amz-Security-Token
+              - X-Amz-User-Agent
+              - X-Amzn-Trace-Id
+              - x-user-id
+            allowCredentials: false
+
+  generateSpecificFollowUpDecisions:
+    handler: functions/generateSpecificFollowUpDecisions.handler
+    timeout: 30
+    events:
+      - http:
+          path: /generate-specific-followup-decisions
+          method: post
+          cors:
+            origin: '*'
+            headers:
+              - Content-Type
+              - X-Amz-Date
+              - Authorization
+              - X-Api-Key
+              - X-Amz-Security-Token
+              - X-Amz-User-Agent
+              - X-Amzn-Trace-Id
+              - x-user-id
+              - Access-Control-Allow-Origin
+              - Access-Control-Allow-Headers
+              - Access-Control-Allow-Methods
+            allowCredentials: false
+
+  generatePathForward:
+    handler: functions/generatePathForward.handler
+    timeout: 30
+    events:
+      - http:
+          path: /generate-path-forward
+          method: post
+          cors:
+            origin: '*'
+            headers:
+              - Content-Type
+              - X-Amz-Date
+              - Authorization
+              - X-Api-Key
+              - X-Amz-Security-Token
+              - X-Amz-User-Agent
+              - X-Amzn-Trace-Id
+              - x-user-id
+              - Access-Control-Allow-Origin
+              - Access-Control-Allow-Headers
+              - Access-Control-Allow-Methods
+            allowCredentials: false
+
+  simulateBranch:
+    handler: functions/simulateBranch.handler
+    timeout: 30
+    events:
+      - http:
+          path: /simulate
+          method: post
+          cors:
+            origin: '*'
+            headers:
+              - Content-Type
+              - X-Amz-Date
+              - Authorization
+              - X-Api-Key
+              - X-Amz-Security-Token
+              - X-Amz-User-Agent
+              - X-Amzn-Trace-Id
+              - x-user-id
+            allowCredentials: false
+
+  # Comparison
+  generateComparison:
+    handler: functions/generateComparison.handler
+    events:
+      - http:
+          path: /decisions/{id}/comparison
+          method: get
+          cors:
+            origin: '*'
+            headers:
+              - Content-Type
+              - X-Amz-Date
+              - Authorization
+              - X-Api-Key
+              - X-Amz-Security-Token
+              - X-Amz-User-Agent
+              - X-Amzn-Trace-Id
+              - x-user-id
+            allowCredentials: false
+
+  # Commit
+  commitDecision:
+    handler: functions/commitDecision.handler
+    events:
+      - http:
+          path: /decisions/{id}/commit
+          method: post
+          cors:
+            origin: '*'
+            headers:
+              - Content-Type
+              - X-Amz-Date
+              - Authorization
+              - X-Api-Key
+              - X-Amz-Security-Token
+              - X-Amz-User-Agent
+              - X-Amzn-Trace-Id
+              - x-user-id
+            allowCredentials: false
